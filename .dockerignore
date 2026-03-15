@@ -1,0 +1,8 @@
+node_modules/
+lib/
+.git/
+*.log
+.DS_Store
+sidecar/node_modules/
+sidecar/dist/
+sidecar/sessions/
