@@ -13,14 +13,17 @@ const API_KEY = process.env.BAILEYS_SIDECAR_API_KEY || ''
 const PORT = parseInt(process.env.PORT || '3500', 10)
 const NEXUS_WEBHOOK_URL = process.env.NEXUS_WEBHOOK_URL || 'http://localhost:3000'
 
+if (!API_KEY) {
+  logger.error('BAILEYS_SIDECAR_API_KEY is required — refusing to start without auth')
+  process.exit(1)
+}
+
 // API key auth middleware
 function authenticate(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  if (API_KEY) {
-    const provided = req.headers['x-api-key']
-    if (provided !== API_KEY) {
-      res.status(401).json({ error: 'Unauthorized' })
-      return
-    }
+  const provided = req.headers['x-api-key']
+  if (provided !== API_KEY) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
   }
   next()
 }

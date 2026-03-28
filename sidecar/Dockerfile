@@ -15,12 +15,17 @@ WORKDIR /baileys
 # Build the Baileys library first
 RUN npm install && npm run build
 
-# Install sidecar dependencies
+# Install sidecar dependencies and build
 WORKDIR /baileys/sidecar
-RUN npm install
+RUN npm install && npm run build
 
 # Create sessions and media directories
 RUN mkdir -p /data/sessions /data/media
+
+# Run as non-root user
+RUN groupadd -r sidecar && useradd -r -g sidecar -d /baileys sidecar \
+    && chown -R sidecar:sidecar /baileys /data
+USER sidecar
 
 ENV NODE_ENV=production
 ENV SESSIONS_DIR=/data/sessions
@@ -31,4 +36,7 @@ EXPOSE 3500
 
 VOLUME ["/data/sessions"]
 
-CMD ["npx", "tsx", "src/index.ts"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD node -e "const h=require('http');h.get('http://localhost:3500/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+
+CMD ["node", "dist/index.js"]

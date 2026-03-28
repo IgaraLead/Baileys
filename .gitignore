@@ -1,5 +1,9 @@
 .DS_Store
 .env
+sidecar/.env
+sidecar/dist/
+sidecar/sessions/
+sidecar/media/
 .yarn/
 *.tgz
 */.DS_Store

@@ -92,7 +92,7 @@ export const useMultiFileAuthState = async (
 		await mkdir(folder, { recursive: true })
 	}
 
-	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
+	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')?.replace(/\.\./g, '__')
 
 	const creds: AuthenticationCreds = (await readData('creds.json')) || initAuthCreds()
 

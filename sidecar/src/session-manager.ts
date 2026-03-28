@@ -358,11 +358,11 @@ export class SessionManager {
   private async processMessage(sessionId: string, msg: any, isHistory: boolean, sock: WASocket): Promise<void> {
     if (msg.key.remoteJid === 'status@broadcast') return
     if (msg.key.remoteJid?.endsWith('@newsletter')) return
-    if (msg.key.remoteJid?.endsWith('@g.us')) return // Skip group messages
     if (!msg.message) return
 
-    // Skip real-time fromMe (already created by Chatwoot), but include for history sync
-    if (msg.key.fromMe && !isHistory) return
+    // Skip real-time fromMe for individual chats (already created by Chatwoot), but include for history sync and groups
+    const isGroup = msg.key.remoteJid?.endsWith('@g.us')
+    if (msg.key.fromMe && !isHistory && !isGroup) return
 
     const { type: msgType, isViewOnce } = detectMessageType(msg.message)
 
