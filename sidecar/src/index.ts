@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import express from 'express'
 import { SessionManager } from './session-manager.js'
 import { logger } from './logger.js'
@@ -18,30 +19,77 @@ if (!API_KEY) {
   process.exit(1)
 }
 
-// API key auth middleware
+// Input validation helpers
+const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/
+const JID_RE = /^[0-9]+@(s\.whatsapp\.net|g\.us|lid)$/
+
+function isValidSessionId(id: unknown): id is string {
+  return typeof id === 'string' && SESSION_ID_RE.test(id)
+}
+
+function isValidJid(jid: unknown): jid is string {
+  return typeof jid === 'string' && JID_RE.test(jid)
+}
+
+// Simple in-memory rate limiter (per IP, 60 RPM for session starts, 300 RPM for messages)
+const rateBuckets = new Map<string, number[]>()
+
+function isRateLimited(ip: string, limit: number): boolean {
+  const now = Date.now()
+  const bucket = rateBuckets.get(ip) ?? []
+  const recent = bucket.filter(t => now - t < 60_000)
+  if (recent.length >= limit) {
+    rateBuckets.set(ip, recent)
+    return true
+  }
+  recent.push(now)
+  rateBuckets.set(ip, recent)
+  return false
+}
+
+// Clean up stale rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, bucket] of rateBuckets) {
+    const recent = bucket.filter(t => now - t < 60_000)
+    if (recent.length === 0) rateBuckets.delete(ip)
+    else rateBuckets.set(ip, recent)
+  }
+}, 5 * 60 * 1000)
+
+// API key auth middleware — timing-safe comparison
 function authenticate(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const provided = req.headers['x-api-key']
-  if (provided !== API_KEY) {
+  if (typeof provided !== 'string' || provided.length !== API_KEY.length) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(API_KEY))) {
     res.status(401).json({ error: 'Unauthorized' })
     return
   }
   next()
 }
 
-app.use(authenticate)
-
 const manager = new SessionManager(NEXUS_WEBHOOK_URL, API_KEY)
 
-// Health check
+// Health check — registered BEFORE auth middleware so Docker healthcheck works
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', sessions: manager.getActiveSessions() })
 })
 
+app.use(authenticate)
+
 // Start a session (generates QR code)
 app.post('/sessions/start', async (req, res) => {
   const { session_id } = req.body
-  if (!session_id) {
-    res.status(400).json({ error: 'session_id is required' })
+  if (!isValidSessionId(session_id)) {
+    res.status(400).json({ error: 'session_id is required (alphanumeric, max 128 chars)' })
+    return
+  }
+  const ip = req.ip || 'unknown'
+  if (isRateLimited(`session:${ip}`, 30)) {
+    res.status(429).json({ error: 'Rate limit exceeded' })
     return
   }
 
@@ -64,8 +112,8 @@ app.get('/sessions/:session_id/status', (req, res) => {
 // Disconnect a session
 app.post('/sessions/disconnect', async (req, res) => {
   const { session_id } = req.body
-  if (!session_id) {
-    res.status(400).json({ error: 'session_id is required' })
+  if (!isValidSessionId(session_id)) {
+    res.status(400).json({ error: 'session_id is required (alphanumeric, max 128 chars)' })
     return
   }
 
@@ -81,8 +129,13 @@ app.post('/sessions/disconnect', async (req, res) => {
 // Send a message
 app.post('/messages/send', async (req, res) => {
   const { session_id, jid, message, quoted_message_id } = req.body
-  if (!session_id || !jid || !message) {
-    res.status(400).json({ error: 'session_id, jid, and message are required' })
+  if (!isValidSessionId(session_id) || !isValidJid(jid) || !message || typeof message !== 'object') {
+    res.status(400).json({ error: 'session_id (alphanumeric), jid (valid WhatsApp JID), and message (object) are required' })
+    return
+  }
+  const ip = req.ip || 'unknown'
+  if (isRateLimited(`msg:${ip}`, 300)) {
+    res.status(429).json({ error: 'Rate limit exceeded' })
     return
   }
 

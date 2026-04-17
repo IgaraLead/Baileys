@@ -1,4 +1,4 @@
-import { downloadMediaMessage, getContentType, type WASocket, type proto } from 'baileys'
+import { downloadMediaMessage, getContentType, type WASocket, type WAMessage, type proto } from 'baileys'
 import { writeFile, mkdir, readdir, unlink, stat } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -157,7 +157,7 @@ export async function downloadAndSaveMedia(
   if (!mediaMsg.mediaKey) return null
 
   try {
-    const buffer = await downloadMediaMessage(fullMsg, 'buffer', {}, {
+    const buffer = await downloadMediaMessage(fullMsg as WAMessage, 'buffer', {}, {
       logger: logger as any,
       reuploadRequest: sock.updateMediaMessage,
     })

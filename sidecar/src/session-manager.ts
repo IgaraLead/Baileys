@@ -185,7 +185,7 @@ export class SessionManager {
     let content: WAMessageContent = {}
 
     if (message.text) {
-      content = { text: message.text }
+      content = { conversation: message.text }
     } else if (message.image) {
       content = { image: { url: message.image.url }, caption: message.caption || undefined } as any
     } else if (message.video) {
