@@ -21,6 +21,7 @@ if (!API_KEY) {
 
 // Input validation helpers
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 const JID_RE = /^[0-9]+@(s\.whatsapp\.net|g\.us|lid)$/
 
 function isValidSessionId(id: unknown): id is string {
@@ -29,6 +30,10 @@ function isValidSessionId(id: unknown): id is string {
 
 function isValidJid(jid: unknown): jid is string {
   return typeof jid === 'string' && JID_RE.test(jid)
+}
+
+function isValidSlug(slug: unknown): slug is string {
+  return typeof slug === 'string' && SLUG_RE.test(slug)
 }
 
 // Simple in-memory rate limiter (per IP, 60 RPM for session starts, 300 RPM for messages)
@@ -82,22 +87,26 @@ app.use(authenticate)
 
 // Start a session (generates QR code)
 app.post('/sessions/start', async (req, res) => {
-  const { session_id } = req.body
+  const { session_id, client_slug } = req.body
   if (!isValidSessionId(session_id)) {
     res.status(400).json({ error: 'session_id is required (alphanumeric, max 128 chars)' })
     return
   }
+  if (client_slug !== undefined && !isValidSlug(client_slug)) {
+    res.status(400).json({ error: 'client_slug must be lowercase alphanumeric with hyphens, max 63 chars' })
+    return
+  }
   const ip = req.ip || 'unknown'
-  if (isRateLimited(`session:${ip}`, 30)) {
+  if (isRateLimited(`session:${ip}`, 60)) {
     res.status(429).json({ error: 'Rate limit exceeded' })
     return
   }
 
   try {
-    const result = await manager.startSession(session_id)
+    const result = await manager.startSession(session_id, client_slug)
     res.json(result)
   } catch (err: any) {
-    logger.error({ err, session_id }, 'Failed to start session')
+    logger.error({ err, session_id, client_slug }, 'Failed to start session')
     res.status(500).json({ error: err.message })
   }
 })
@@ -105,32 +114,41 @@ app.post('/sessions/start', async (req, res) => {
 // Get session status
 app.get('/sessions/:session_id/status', (req, res) => {
   const { session_id } = req.params
-  const status = manager.getSessionStatus(session_id)
+  const client_slug = req.query.client_slug as string | undefined
+  const status = manager.getSessionStatus(session_id, client_slug)
   res.json({ session_id, status })
 })
 
 // Disconnect a session
 app.post('/sessions/disconnect', async (req, res) => {
-  const { session_id } = req.body
+  const { session_id, client_slug } = req.body
   if (!isValidSessionId(session_id)) {
     res.status(400).json({ error: 'session_id is required (alphanumeric, max 128 chars)' })
     return
   }
+  if (client_slug !== undefined && !isValidSlug(client_slug)) {
+    res.status(400).json({ error: 'client_slug must be lowercase alphanumeric with hyphens, max 63 chars' })
+    return
+  }
 
   try {
-    await manager.disconnectSession(session_id)
+    await manager.disconnectSession(session_id, client_slug)
     res.json({ status: 'disconnected' })
   } catch (err: any) {
-    logger.error({ err, session_id }, 'Failed to disconnect session')
+    logger.error({ err, session_id, client_slug }, 'Failed to disconnect session')
     res.status(500).json({ error: err.message })
   }
 })
 
 // Send a message
 app.post('/messages/send', async (req, res) => {
-  const { session_id, jid, message, quoted_message_id } = req.body
+  const { session_id, jid, message, quoted_message_id, client_slug } = req.body
   if (!isValidSessionId(session_id) || !isValidJid(jid) || !message || typeof message !== 'object') {
     res.status(400).json({ error: 'session_id (alphanumeric), jid (valid WhatsApp JID), and message (object) are required' })
+    return
+  }
+  if (client_slug !== undefined && !isValidSlug(client_slug)) {
+    res.status(400).json({ error: 'client_slug must be lowercase alphanumeric with hyphens, max 63 chars' })
     return
   }
   const ip = req.ip || 'unknown'
@@ -140,10 +158,10 @@ app.post('/messages/send', async (req, res) => {
   }
 
   try {
-    const result = await manager.sendMessage(session_id, jid, message, quoted_message_id)
+    const result = await manager.sendMessage(session_id, jid, message, quoted_message_id, client_slug)
     res.json(result)
   } catch (err: any) {
-    logger.error({ err, session_id, jid }, 'Failed to send message')
+    logger.error({ err, session_id, jid, client_slug }, 'Failed to send message')
     res.status(500).json({ error: err.message })
   }
 })

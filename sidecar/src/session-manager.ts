@@ -9,6 +9,7 @@ import makeWASocket, {
   type Contact,
 } from 'baileys'
 import { readdir, rm } from 'fs/promises'
+import { existsSync } from 'fs'
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
 import type { CacheStore } from 'baileys'
@@ -51,28 +52,30 @@ export class SessionManager {
     await this.waitForRails()
 
     try {
-      const dirs = await readdir(SESSIONS_DIR, { withFileTypes: true })
-      const sessionIds = dirs.filter(d => d.isDirectory()).map(d => d.name)
-      if (!sessionIds.length) {
+      const topDirs = await readdir(SESSIONS_DIR, { withFileTypes: true })
+      const slugDirs = topDirs.filter(d => d.isDirectory())
+      if (!slugDirs.length) {
         logger.info('No saved sessions to restore')
         return
       }
 
-      logger.info({ count: sessionIds.length }, 'Restoring saved sessions')
-      for (const sessionId of sessionIds) {
-        try {
-          const result = await this.startSession(sessionId)
+      for (const slugDir of slugDirs) {
+        const slugPath = `${SESSIONS_DIR}/${slugDir.name}`
+        // Check if this is a slug directory (contains subdirectories) or a legacy flat session
+        const children = await readdir(slugPath, { withFileTypes: true }).catch(() => [])
+        const hasSubDirs = children.some(c => c.isDirectory())
 
-          if (result.status === 'connected') {
-            logger.info({ sessionId }, 'Session restored')
-          } else {
-            // Session needs QR re-pairing or failed — stale auth state, clean up
-            logger.warn({ sessionId, status: result.status }, 'Stale session removed during restore')
-            await this.cleanupSession(sessionId)
+        if (hasSubDirs) {
+          // Slug-scoped sessions: /sessions/{slug}/{sessionId}/
+          const sessionIds = children.filter(c => c.isDirectory()).map(c => c.name)
+          logger.info({ slug: slugDir.name, count: sessionIds.length }, 'Restoring slug-scoped sessions')
+          for (const sessionId of sessionIds) {
+            await this.restoreOneSession(sessionId, slugDir.name)
           }
-        } catch (err) {
-          logger.warn({ err, sessionId }, 'Failed to restore session, cleaning up')
-          await this.cleanupSession(sessionId)
+        } else {
+          // Legacy flat session: /sessions/{sessionId}/ (no slug)
+          logger.info({ sessionId: slugDir.name }, 'Restoring legacy session (no slug)')
+          await this.restoreOneSession(slugDir.name)
         }
       }
     } catch {
@@ -80,14 +83,43 @@ export class SessionManager {
     }
   }
 
-  private async cleanupSession(sessionId: string): Promise<void> {
-    const entry = this.sessions.get(sessionId)
+  private async restoreOneSession(sessionId: string, clientSlug?: string): Promise<void> {
+    const label = clientSlug ? `${clientSlug}/${sessionId}` : sessionId
+    try {
+      const result = await this.startSession(sessionId, clientSlug)
+
+      if (result.status === 'connected') {
+        logger.info({ sessionId, clientSlug }, 'Session restored')
+      } else {
+        logger.warn({ sessionId, clientSlug, status: result.status }, 'Stale session removed during restore')
+        await this.cleanupSession(sessionId, clientSlug)
+      }
+    } catch (err) {
+      logger.warn({ err, sessionId, clientSlug }, 'Failed to restore session, cleaning up')
+      await this.cleanupSession(sessionId, clientSlug)
+    }
+  }
+
+  private sessionPath(sessionId: string, clientSlug?: string): string {
+    if (clientSlug) {
+      return `${SESSIONS_DIR}/${clientSlug}/${sessionId}`
+    }
+    return `${SESSIONS_DIR}/${sessionId}`
+  }
+
+  private sessionKey(sessionId: string, clientSlug?: string): string {
+    return clientSlug ? `${clientSlug}:${sessionId}` : sessionId
+  }
+
+  private async cleanupSession(sessionId: string, clientSlug?: string): Promise<void> {
+    const key = this.sessionKey(sessionId, clientSlug)
+    const entry = this.sessions.get(key)
     if (entry?.socket) {
       try { entry.socket.end(undefined) } catch { /* ignore */ }
     }
-    this.sessions.delete(sessionId)
-    const sessionPath = `${SESSIONS_DIR}/${sessionId}`
-    await rm(sessionPath, { recursive: true, force: true }).catch(() => {})
+    this.sessions.delete(key)
+    const sessionDir = this.sessionPath(sessionId, clientSlug)
+    await rm(sessionDir, { recursive: true, force: true }).catch(() => {})
   }
 
   private async waitForRails(): Promise<void> {
@@ -116,12 +148,14 @@ export class SessionManager {
       .map(([id]) => id)
   }
 
-  getSessionStatus(sessionId: string): string {
-    return this.sessions.get(sessionId)?.status || 'disconnected'
+  getSessionStatus(sessionId: string, clientSlug?: string): string {
+    const key = this.sessionKey(sessionId, clientSlug)
+    return this.sessions.get(key)?.status || 'disconnected'
   }
 
-  async startSession(sessionId: string): Promise<{ session_id: string; status: string; qr?: string }> {
-    const existing = this.sessions.get(sessionId)
+  async startSession(sessionId: string, clientSlug?: string): Promise<{ session_id: string; status: string; qr?: string }> {
+    const key = this.sessionKey(sessionId, clientSlug)
+    const existing = this.sessions.get(key)
     if (existing?.status === 'connected') {
       return { session_id: sessionId, status: 'connected' }
     }
@@ -139,15 +173,15 @@ export class SessionManager {
       phoneNumber: null,
       retryCount: 0,
     }
-    this.sessions.set(sessionId, entry)
+    this.sessions.set(key, entry)
 
-    await this.connect(sessionId, entry)
+    await this.connect(sessionId, entry, clientSlug)
 
     // Wait briefly for QR to be generated
-    await this.waitForQR(sessionId, 8000)
+    await this.waitForQR(key, 8000)
 
     // Session may have been removed during connect (e.g. logged out)
-    const updated = this.sessions.get(sessionId)
+    const updated = this.sessions.get(key)
     if (!updated) {
       return { session_id: sessionId, status: 'disconnected' }
     }
@@ -161,23 +195,26 @@ export class SessionManager {
     return result
   }
 
-  async disconnectSession(sessionId: string): Promise<void> {
-    const entry = this.sessions.get(sessionId)
+  async disconnectSession(sessionId: string, clientSlug?: string): Promise<void> {
+    const key = this.sessionKey(sessionId, clientSlug)
+    const entry = this.sessions.get(key)
     if (entry?.socket) {
       try { await entry.socket.logout() } catch { /* ignore */ }
       try { entry.socket.end(undefined) } catch { /* ignore */ }
     }
-    this.sessions.delete(sessionId)
-    logger.info({ sessionId }, 'Session disconnected')
+    this.sessions.delete(key)
+    logger.info({ sessionId, clientSlug }, 'Session disconnected')
   }
 
   async sendMessage(
     sessionId: string,
     jid: string,
     message: Record<string, any>,
-    quotedMessageId?: string
+    quotedMessageId?: string,
+    clientSlug?: string
   ): Promise<{ key: proto.IMessageKey } | null> {
-    const entry = this.sessions.get(sessionId)
+    const key = this.sessionKey(sessionId, clientSlug)
+    const entry = this.sessions.get(key)
     if (!entry?.socket || entry.status !== 'connected') {
       throw new Error(`Session ${sessionId} is not connected`)
     }
@@ -207,9 +244,10 @@ export class SessionManager {
 
   // --- Private ---
 
-  private async connect(sessionId: string, entry: SessionEntry): Promise<void> {
-    const sessionPath = `${SESSIONS_DIR}/${sessionId}`
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath)
+  private async connect(sessionId: string, entry: SessionEntry, clientSlug?: string): Promise<void> {
+    const sessPath = this.sessionPath(sessionId, clientSlug)
+    const key = this.sessionKey(sessionId, clientSlug)
+    const { state, saveCreds } = await useMultiFileAuthState(sessPath)
     const { version } = await fetchLatestBaileysVersion()
 
     const sock = makeWASocket({
@@ -234,7 +272,7 @@ export class SessionManager {
 
     sock.ev.process(async (events) => {
       if (events['connection.update']) {
-        await this.handleConnectionUpdate(sessionId, events['connection.update'])
+        await this.handleConnectionUpdate(key, sessionId, events['connection.update'], clientSlug)
       }
 
       if (events['creds.update']) {
@@ -263,8 +301,8 @@ export class SessionManager {
     })
   }
 
-  private async handleConnectionUpdate(sessionId: string, update: any): Promise<void> {
-    const entry = this.sessions.get(sessionId)
+  private async handleConnectionUpdate(key: string, sessionId: string, update: any, clientSlug?: string): Promise<void> {
+    const entry = this.sessions.get(key)
     if (!entry) return
 
     const { connection, lastDisconnect, qr } = update
@@ -314,12 +352,12 @@ export class SessionManager {
       if (loggedOut) {
         entry.status = 'disconnected'
         entry.socket = null
-        this.sessions.delete(sessionId)
-        logger.info({ sessionId }, 'Session logged out')
+        this.sessions.delete(key)
+        logger.info({ sessionId, clientSlug }, 'Session logged out')
 
         // Clean up auth state for logged-out sessions
-        const sessionPath = `${SESSIONS_DIR}/${sessionId}`
-        rm(sessionPath, { recursive: true, force: true }).catch(() => {})
+        const sessPath = this.sessionPath(sessionId, clientSlug)
+        rm(sessPath, { recursive: true, force: true }).catch(() => {})
 
         await this.webhookPost('/webhooks/baileys/connection', {
           session_id: sessionId,
@@ -328,9 +366,9 @@ export class SessionManager {
       } else if (entry.retryCount < MAX_RETRIES) {
         entry.retryCount++
         entry.status = 'connecting'
-        logger.info({ sessionId, retry: entry.retryCount }, 'Reconnecting...')
+        logger.info({ sessionId, clientSlug, retry: entry.retryCount }, 'Reconnecting...')
         // Reconnect after a short delay
-        setTimeout(() => this.connect(sessionId, entry), 2000)
+        setTimeout(() => this.connect(sessionId, entry, clientSlug), 2000)
       } else {
         entry.status = 'disconnected'
         entry.socket = null
