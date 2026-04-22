@@ -1,5 +1,5 @@
 import { Boom } from '@hapi/boom'
-import { exec, execFile } from 'child_process'
+import { execFile } from 'child_process'
 import * as Crypto from 'crypto'
 import { once } from 'events'
 import { createReadStream, createWriteStream, promises as fs, WriteStream } from 'fs'

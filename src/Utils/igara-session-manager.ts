@@ -13,7 +13,7 @@ export interface IgaraSessionConfig {
  */
 export function tagSession(
 	state: AuthenticationState,
-	config: IgaraSessionConfig,
+	config: IgaraSessionConfig
 ): AuthenticationState & { igaraMeta: IgaraSessionConfig } {
 	return { ...state, igaraMeta: config }
 }
