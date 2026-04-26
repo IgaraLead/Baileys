@@ -1,4 +1,4 @@
-import { downloadMediaMessage, getContentType, type WASocket, type WAMessage, type proto } from 'baileys'
+import { downloadMediaMessage, getContentType, type WASocket, type WAMessage, type proto } from '@igaralead/baileys'
 import { writeFile, mkdir, readdir, unlink, stat } from 'fs/promises'
 import { join } from 'path'
 import { randomUUID } from 'crypto'

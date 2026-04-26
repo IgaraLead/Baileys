@@ -7,12 +7,12 @@ import makeWASocket, {
   type WAMessageContent,
   type proto,
   type Contact,
-} from 'baileys'
+} from '@igaralead/baileys'
 import { readdir, rm } from 'fs/promises'
 import { existsSync } from 'fs'
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
-import type { CacheStore } from 'baileys'
+import type { CacheStore } from '@igaralead/baileys'
 import * as QRCode from 'qrcode'
 import { logger } from './logger.js'
 import {
