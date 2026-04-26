@@ -2,7 +2,7 @@ name: Build & Publish Baileys Sidecar Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -44,6 +44,7 @@ jobs:
         with:
           context: .
           file: sidecar/Dockerfile
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
